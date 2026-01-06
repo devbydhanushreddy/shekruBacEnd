@@ -11,6 +11,9 @@
     "dev": "nodemon index.js",
     "start": "node index.js"
   },
+  "engines": {
+    "node": "18.x"
+  },
   "dependencies": {
     "bcrypt": "^6.0.0",
     "connect-mongodb-session": "^5.0.0",

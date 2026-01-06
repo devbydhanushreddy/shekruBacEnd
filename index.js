@@ -12,22 +12,28 @@ const { validateUsr } = require("./utils/inputValidation");
 const { createDefaultAdmin } = require("./utils/defaultAdmin");
 
 const app = express();
-const SALT = 10;
+const SALT = Number(process.env.SALT);
 const PORT = process.env.PORT || 8000;
 const MONGO_URL = process.env.MONGO_URL;
 
 // ----------------- MONGO -----------------
 mongoose
-  .connect(MONGO_URL)
+  .connect(MONGO_URL, {
+    tls: true,
+  })
   .then(() => console.log("✅ MongoDB Connected"))
-  .catch((err) => console.log("❌ Mongo Error:", err));
-
+  .catch((err) => console.error("❌ Mongo Error:", err));
 // ----------------- SESSION -----------------
 const store = new MongoDBStore({
   uri: MONGO_URL,
   collection: "sessions",
+  connectionOptions: {
+    tls: true,
+  },
 });
-
+store.on("error", (error) => {
+  console.error("Session store error:", error);
+});
 app.use(
   session({
     secret: process.env.SESSION_SECRET,
@@ -40,9 +46,14 @@ app.use(
 
 // ----------------- CORS -----------------
 
+const allowedOrigins = [
+  "http://localhost:5173",
+  process.env.FRONTEND_URL,
+].filter(Boolean);
+
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: allowedOrigins,
     credentials: true,
   })
 );
@@ -107,7 +118,6 @@ app.put("/api/user/:id", isAuth, isAdmin, async (req, res) => {
     }
 
     await user.save();
-
     res.status(200).send("User updated successfully");
   } catch (err) {
     res.status(500).send(err.message);
@@ -175,7 +185,7 @@ app.post("/api/auth/login", async (req, res) => {
   ) {
     req.session.isAuth = true;
     req.session.role = "admin";
-    res.redirect("/dashboard");
+    return res.redirect("/dashboard");
   }
 
   try {
