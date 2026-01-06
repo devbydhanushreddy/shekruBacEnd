@@ -40,7 +40,12 @@ app.use(
     resave: false,
     saveUninitialized: false,
     store,
-    cookie: { maxAge: 1000 * 60 * 60 },
+    cookie: {
+      httpOnly: true,
+      secure: true, // REQUIRED on Render (HTTPS)
+      sameSite: "none", // REQUIRED for Netlify → Render
+      maxAge: 1000 * 60 * 60,
+    },
   })
 );
 
