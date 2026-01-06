@@ -1,4 +1,5 @@
 require("dotenv").config();
+
 const express = require("express");
 const mongoose = require("mongoose");
 const bcrypt = require("bcrypt");
@@ -166,8 +167,6 @@ app.get("/api/logout", (req, res) => {
 });
 app.post("/api/auth/login", async (req, res) => {
   const { email, password } = req.body;
-  console.log(email, "email");
-  console.log(password, "password");
 
   /* ----------Default ADMIN LOGIN (NO OTP) ---------- */
   if (
@@ -176,7 +175,7 @@ app.post("/api/auth/login", async (req, res) => {
   ) {
     req.session.isAuth = true;
     req.session.role = "admin";
-    return res.redirect("/dashboard");
+    res.redirect("/dashboard");
   }
 
   try {
@@ -251,5 +250,7 @@ app.post("/api/auth/verify-otp", (req, res) => {
     res.status(200).send("Login successful");
   });
 });
-
+app.get("/", (req, res) =>
+  res.status(200).send("server connection successful")
+);
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
