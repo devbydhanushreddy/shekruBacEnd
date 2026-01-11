@@ -42,8 +42,8 @@ app.use(
     store,
     cookie: {
       httpOnly: true,
-      secure: true, // REQUIRED on Render (HTTPS)
-      sameSite: "none", // REQUIRED for Netlify → Render
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "none",
       maxAge: 1000 * 60 * 60,
     },
   })
@@ -190,7 +190,7 @@ app.post("/api/auth/login", async (req, res) => {
   ) {
     req.session.isAuth = true;
     req.session.role = "admin";
-    return res.redirect("/dashboard");
+    res.status(200).json({ success: true });
   }
 
   try {
