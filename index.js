@@ -19,9 +19,14 @@ const PORT = process.env.PORT || 8000;
 const MONGO_URL = process.env.MONGO_URL;
 const SALT = Number(process.env.SALT || 10);
 
+if (!MONGO_URL) {
+  console.error("❌ MONGO_URL missing");
+  process.exit(1);
+}
+
 /* ===================== MONGO ===================== */
 mongoose
-  .connect(MONGO_URL, { tls: true })
+  .connect(MONGO_URL)
   .then(() => {
     console.log("✅ MongoDB Connected");
     createDefaultAdmin();
@@ -35,14 +40,13 @@ mongoose
 const store = new MongoDBStore({
   uri: MONGO_URL,
   collection: "sessions",
-  connectionOptions: { tls: true },
 });
 
 store.on("error", (err) => {
   console.error("❌ Session store error:", err);
 });
 
-/* ===================== CORS (PRODUCTION SAFE) ===================== */
+/* ===================== CORS (NODE 22 SAFE) ===================== */
 const allowedOrigins = [
   "http://localhost:5173",
   "https://dhanushapp.netlify.app",
@@ -52,22 +56,23 @@ app.use(
   cors({
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
+      if (allowedOrigins.includes(origin)) return callback(null, true);
       return callback(new Error("CORS blocked"));
     },
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE"],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
+/* ❌ DO NOT USE app.options("*") — crashes Node 22 */
 /* ===================== BODY PARSERS ===================== */
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 /* ===================== SESSION ===================== */
+app.set("trust proxy", 1); // REQUIRED for Render
+
 app.use(
   session({
     name: "connect.sid",
@@ -77,8 +82,8 @@ app.use(
     store,
     cookie: {
       httpOnly: true,
-      secure: true, // REQUIRED for HTTPS (Render)
-      sameSite: "none", // REQUIRED for Netlify
+      secure: true, // Render uses HTTPS
+      sameSite: "none", // Netlify cross-site cookie
       maxAge: 1000 * 60 * 60,
     },
   })
@@ -107,7 +112,12 @@ app.post("/add/user", isAuth, isAdmin, async (req, res) => {
       return res.status(409).send("User exists");
 
     const hash = await bcrypt.hash(password, SALT);
-    await User.create({ name, email, password: hash, role: role || "user" });
+    await User.create({
+      name,
+      email,
+      password: hash,
+      role: role || "user",
+    });
 
     res.status(201).send("User added");
   } catch (err) {
@@ -140,17 +150,17 @@ app.post("/api/auth/login", async (req, res) => {
   const email = req.body.email?.trim().toLowerCase();
   const password = req.body.password?.trim();
 
-  /* ADMIN LOGIN */
+  // ADMIN LOGIN
   if (
     email === process.env.ADMIN_EMAIL?.toLowerCase() &&
     password === process.env.ADMIN_PASSWORD
   ) {
     req.session.isAuth = true;
     req.session.role = "admin";
-    return res.status(200).json({ role: "admin" });
+    return res.json({ role: "admin" });
   }
 
-  /* USER LOGIN */
+  // USER LOGIN
   const user = await User.findOne({ email });
   if (!user) return res.status(404).send("Email not found");
 
@@ -160,7 +170,6 @@ app.post("/api/auth/login", async (req, res) => {
   const otp = generateOTP();
   req.session.loginOTP = otp;
   req.session.otpExpiry = Date.now() + 5 * 60 * 1000;
-  req.session.tempUser = user.email;
   req.session.role = user.role;
   req.session.isAuth = false;
 
@@ -199,7 +208,7 @@ app.get("/api/logout", (req, res) => {
   });
 });
 
-/* ---- HEALTH CHECK ---- */
+/* ---- HEALTH ---- */
 app.get("/", (_, res) => res.send("Backend running 🚀"));
 
 /* ===================== START ===================== */
