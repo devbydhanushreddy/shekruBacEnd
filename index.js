@@ -18,22 +18,25 @@ const MONGO_URL = process.env.MONGO_URL;
 
 // ----------------- MONGO -----------------
 mongoose
-  .connect(MONGO_URL, {
-    tls: true,
+  .connect(MONGO_URL, { tls: true })
+  .then(() => {
+    console.log("✅ MongoDB Connected");
+    // create default admin if not exists
+    createDefaultAdmin();
   })
-  .then(() => console.log("✅ MongoDB Connected"))
   .catch((err) => console.error("❌ Mongo Error:", err));
+
 // ----------------- SESSION -----------------
 const store = new MongoDBStore({
   uri: MONGO_URL,
   collection: "sessions",
-  connectionOptions: {
-    tls: true,
-  },
+  connectionOptions: { tls: true },
 });
+
 store.on("error", (error) => {
   console.error("Session store error:", error);
 });
+
 app.use(
   session({
     secret: process.env.SESSION_SECRET,
@@ -42,17 +45,16 @@ app.use(
     store,
     cookie: {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "none",
-      maxAge: 1000 * 60 * 60,
+      secure: process.env.NODE_ENV === "production", // HTTPS only in prod
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      maxAge: 1000 * 60 * 60, // 1 hour
     },
   })
 );
 
 // ----------------- CORS -----------------
-
 const allowedOrigins = [
-  "http://localhost:5173", // local frontend
+  "http://localhost:5173", // local dev frontend
   process.env.FRONTEND_URL, // production frontend
 ].filter(Boolean);
 
@@ -69,13 +71,13 @@ app.use(express.urlencoded({ extended: true }));
 
 // ----------------- AUTH MIDDLEWARE -----------------
 const isAuth = (req, res, next) => {
-  if (req.session.isAuth) next();
-  else return res.status(401).send("Unauthorized");
+  if (req.session.isAuth) return next();
+  return res.status(401).send("Unauthorized");
 };
 
 const isAdmin = (req, res, next) => {
-  if (req.session.role === "admin") next();
-  else return res.status(403).send("Admin access only");
+  if (req.session.role === "admin") return next();
+  return res.status(403).send("Admin access only");
 };
 
 // ----------------- ADD USER -----------------
@@ -96,6 +98,7 @@ app.post("/add/user", isAuth, isAdmin, async (req, res) => {
       password: hashedPassword,
       role: role || "user",
     });
+
     res.status(201).send("User added successfully");
   } catch (err) {
     res.status(500).send(err.message);
@@ -113,14 +116,9 @@ app.put("/api/user/:id", isAuth, isAdmin, async (req, res) => {
 
     if (name) user.name = name;
     if (email) user.email = email;
-    if (role && email !== process.env.ADMIN_EMAIL) {
-      user.role = role;
-    }
+    if (role && email !== process.env.ADMIN_EMAIL) user.role = role;
 
-    if (password) {
-      const hashPass = await bcrypt.hash(password, SALT);
-      user.password = hashPass;
-    }
+    if (password) user.password = await bcrypt.hash(password, SALT);
 
     await user.save();
     res.status(200).send("User updated successfully");
@@ -132,9 +130,7 @@ app.put("/api/user/:id", isAuth, isAdmin, async (req, res) => {
 // ----------------- DELETE USER -----------------
 app.delete("/api/user/:id", isAuth, isAdmin, async (req, res) => {
   try {
-    const { id } = req.params;
-
-    const user = await User.findByIdAndDelete(id);
+    const user = await User.findByIdAndDelete(req.params.id);
     if (!user) return res.status(404).send("User not found");
 
     res.status(200).send("User deleted successfully");
@@ -144,18 +140,13 @@ app.delete("/api/user/:id", isAuth, isAdmin, async (req, res) => {
 });
 
 // ----------------- DASHBOARD -----------------
-// app.get("/dashboard", isAuth, async (req, res) => {
-//   const users = await User.find({}, "-password");
-//   res.json({ users, role: req.session.role });
-// });
 app.get("/dashboard", isAuth, async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1; // current page
-    const limit = 5; // users per page
+    const page = parseInt(req.query.page) || 1;
+    const limit = 5;
     const skip = (page - 1) * limit;
 
     const totalUsers = await User.countDocuments();
-
     const users = await User.find({}, "-password")
       .skip(skip)
       .limit(limit)
@@ -176,96 +167,84 @@ app.get("/dashboard", isAuth, async (req, res) => {
 // ----------------- LOGOUT -----------------
 app.get("/api/logout", (req, res) => {
   req.session.destroy(() => {
-    res.clearCookie("connect.sid");
+    res.clearCookie("connect.sid", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    });
     res.status(200).send("Logged out successfully");
   });
 });
+
+// ----------------- LOGIN -----------------
 app.post("/api/auth/login", async (req, res) => {
   const { email, password } = req.body;
 
-  /* ----------Default ADMIN LOGIN (NO OTP) ---------- */
-  if (
-    email === process.env.ADMIN_EMAIL &&
-    password === process.env.ADMIN_PASSWORD
-  ) {
+  const emailInput = email?.trim().toLowerCase();
+  const passwordInput = password?.trim();
+
+  const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+  const adminPassword = process.env.ADMIN_PASSWORD?.trim();
+
+  // ---------- ADMIN LOGIN ----------
+  if (emailInput === adminEmail && passwordInput === adminPassword) {
     req.session.isAuth = true;
     req.session.role = "admin";
-    res.status(200).json({ success: true });
+
+    console.log("Admin logged in");
+    return res.status(200).json({ success: true, role: "admin" });
   }
 
+  // ---------- NORMAL USER LOGIN (OTP) ----------
   try {
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: emailInput });
+    if (!user) return res.status(404).send("Email not registered");
 
-    /* EMAIL NOT FOUND */
-    if (!user) {
-      return res.status(404).send("Email not registered");
-    }
+    const isMatch = await bcrypt.compare(passwordInput, user.password);
+    if (!isMatch) return res.status(401).send("Incorrect password");
 
-    const isMatch = await bcrypt.compare(password, user.password);
-
-    /*WRONG PASSWORD */
-    if (!isMatch) {
-      return res.status(401).send("Incorrect password");
-    }
-
-    /* ---------- NORMAL USER → OTP LOGIN ---------- */
     const otp = generateOTP();
-
     req.session.loginOTP = otp;
     req.session.otpExpiry = Date.now() + 5 * 60 * 1000;
     req.session.tempUser = user.email;
     req.session.role = user.role;
     req.session.isAuth = false;
 
-    await sendMail({
-      email,
-      name: user.name,
-      otp,
-    });
+    await sendMail({ email: user.email, name: user.name, otp });
 
-    return req.session.save(() => {
-      res.status(200).send("OTP sent to registered email");
-    });
-  } catch (error) {
-    console.error(error);
+    return res.status(200).send("OTP sent to registered email");
+  } catch (err) {
+    console.error(err);
     return res.status(500).send("Server error");
   }
 });
+
+// ----------------- VERIFY OTP -----------------
 app.post("/api/auth/verify-otp", (req, res) => {
   const { otp } = req.body;
 
-  /* ❌ OTP NOT GENERATED */
-  if (!req.session.loginOTP || !req.session.otpExpiry) {
+  if (!req.session.loginOTP || !req.session.otpExpiry)
     return res.status(400).send("OTP not generated");
-  }
 
-  /* ❌ OTP EXPIRED */
   if (Date.now() > req.session.otpExpiry) {
-    // cleanup
     req.session.loginOTP = null;
     req.session.otpExpiry = null;
     req.session.tempUser = null;
-
     return res.status(401).send("OTP expired");
   }
 
-  /* ❌ OTP INVALID */
-  if (Number(otp) !== req.session.loginOTP) {
+  if (Number(otp) !== req.session.loginOTP)
     return res.status(401).send("Invalid OTP");
-  }
 
-  /* ✅ OTP VERIFIED → LOGIN SUCCESS */
   req.session.isAuth = true;
-
-  // cleanup OTP data
   req.session.loginOTP = null;
   req.session.otpExpiry = null;
 
-  return req.session.save(() => {
-    res.status(200).send("Login successful");
-  });
+  return res.status(200).send("Login successful");
 });
-app.get("/", (req, res) =>
-  res.status(200).send("server connection successful")
-);
+
+// ----------------- ROOT -----------------
+app.get("/", (req, res) => res.status(200).send("Server running successfully"));
+
+// ----------------- START SERVER -----------------
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
