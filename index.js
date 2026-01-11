@@ -6,79 +6,85 @@ const bcrypt = require("bcrypt");
 const session = require("express-session");
 const MongoDBStore = require("connect-mongodb-session")(session);
 const cors = require("cors");
+
 const { generateOTP, sendMail } = require("./utils/verification");
 const User = require("./models/User");
 const { validateUsr } = require("./utils/inputValidation");
 const { createDefaultAdmin } = require("./utils/defaultAdmin");
 
 const app = express();
-const SALT = Number(process.env.SALT);
+
+/* ===================== ENV ===================== */
 const PORT = process.env.PORT || 8000;
 const MONGO_URL = process.env.MONGO_URL;
+const SALT = Number(process.env.SALT || 10);
 
-// ----------------- MONGO -----------------
+/* ===================== MONGO ===================== */
 mongoose
   .connect(MONGO_URL, { tls: true })
   .then(() => {
     console.log("✅ MongoDB Connected");
     createDefaultAdmin();
   })
-  .catch((err) => console.error("❌ Mongo Error:", err));
+  .catch((err) => {
+    console.error("❌ Mongo Error:", err);
+    process.exit(1);
+  });
 
-// ----------------- SESSION -----------------
+/* ===================== SESSION STORE ===================== */
 const store = new MongoDBStore({
   uri: MONGO_URL,
   collection: "sessions",
   connectionOptions: { tls: true },
 });
 
-store.on("error", (error) => {
-  console.error("Session store error:", error);
+store.on("error", (err) => {
+  console.error("❌ Session store error:", err);
 });
 
+/* ===================== CORS (PRODUCTION SAFE) ===================== */
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://dhanushapp.netlify.app",
+];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error("CORS blocked"));
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+
+/* ===================== BODY PARSERS ===================== */
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+/* ===================== SESSION ===================== */
 app.use(
   session({
+    name: "connect.sid",
     secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     store,
     cookie: {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production", // HTTPS only in prod
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      maxAge: 1000 * 60 * 60, // 1 hour
+      secure: true, // REQUIRED for HTTPS (Render)
+      sameSite: "none", // REQUIRED for Netlify
+      maxAge: 1000 * 60 * 60,
     },
   })
 );
 
-// ----------------- CORS (Production-Ready) -----------------
-const allowedOrigins = [
-  "http://localhost:5173", // dev
-  "https://dhanushapp.netlify.app", // production frontend
-].filter(Boolean);
-
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      // allow requests with no origin (like Postman)
-      if (!origin) return callback(null, true);
-      if (!allowedOrigins.includes(origin)) {
-        const msg = `CORS policy does not allow access from ${origin}`;
-        return callback(new Error(msg), false);
-      }
-      return callback(null, true);
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  })
-);
-
-// ----------------- MIDDLEWARE -----------------
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// ----------------- AUTH MIDDLEWARE -----------------
+/* ===================== AUTH MIDDLEWARE ===================== */
 const isAuth = (req, res, next) => {
   if (req.session.isAuth) return next();
   return res.status(401).send("Unauthorized");
@@ -86,156 +92,90 @@ const isAuth = (req, res, next) => {
 
 const isAdmin = (req, res, next) => {
   if (req.session.role === "admin") return next();
-  return res.status(403).send("Admin access only");
+  return res.status(403).send("Admin only");
 };
 
-// ----------------- ADD USER -----------------
+/* ===================== ROUTES ===================== */
+
+/* ---- ADD USER ---- */
 app.post("/add/user", isAuth, isAdmin, async (req, res) => {
   try {
     const { name, email, password, role } = req.body;
-
     validateUsr({ name, email, password });
 
-    const exists = await User.findOne({ email });
-    if (exists) return res.status(409).send("User already exists");
+    if (await User.findOne({ email }))
+      return res.status(409).send("User exists");
 
-    const hashedPassword = await bcrypt.hash(password, SALT);
+    const hash = await bcrypt.hash(password, SALT);
+    await User.create({ name, email, password: hash, role: role || "user" });
 
-    await User.create({
-      name,
-      email,
-      password: hashedPassword,
-      role: role || "user",
-    });
-
-    res.status(201).send("User added successfully");
+    res.status(201).send("User added");
   } catch (err) {
     res.status(500).send(err.message);
   }
 });
 
-// ----------------- EDIT USER -----------------
-app.put("/api/user/:id", isAuth, isAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { name, email, password, role } = req.body;
-
-    const user = await User.findById(id);
-    if (!user) return res.status(404).send("User not found");
-
-    if (name) user.name = name;
-    if (email) user.email = email;
-    if (role && email !== process.env.ADMIN_EMAIL) user.role = role;
-
-    if (password) user.password = await bcrypt.hash(password, SALT);
-
-    await user.save();
-    res.status(200).send("User updated successfully");
-  } catch (err) {
-    res.status(500).send(err.message);
-  }
-});
-
-// ----------------- DELETE USER -----------------
-app.delete("/api/user/:id", isAuth, isAdmin, async (req, res) => {
-  try {
-    const user = await User.findByIdAndDelete(req.params.id);
-    if (!user) return res.status(404).send("User not found");
-
-    res.status(200).send("User deleted successfully");
-  } catch (err) {
-    res.status(500).send(err.message);
-  }
-});
-
-// ----------------- DASHBOARD -----------------
+/* ---- DASHBOARD ---- */
 app.get("/dashboard", isAuth, async (req, res) => {
-  try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = 5;
-    const skip = (page - 1) * limit;
+  const page = Number(req.query.page) || 1;
+  const limit = 5;
+  const skip = (page - 1) * limit;
 
-    const totalUsers = await User.countDocuments();
-    const users = await User.find({}, "-password")
-      .skip(skip)
-      .limit(limit)
-      .sort({ createdAt: -1 });
+  const totalUsers = await User.countDocuments();
+  const users = await User.find({}, "-password")
+    .skip(skip)
+    .limit(limit)
+    .sort({ createdAt: -1 });
 
-    res.status(200).json({
-      users,
-      currentPage: page,
-      totalPages: Math.ceil(totalUsers / limit),
-      totalUsers,
-      role: req.session.role,
-    });
-  } catch (err) {
-    res.status(500).send("Error loading dashboard");
-  }
-});
-
-// ----------------- LOGOUT -----------------
-app.get("/api/logout", (req, res) => {
-  req.session.destroy(() => {
-    res.clearCookie("connect.sid", {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-    });
-    res.status(200).send("Logged out successfully");
+  res.json({
+    users,
+    page,
+    totalPages: Math.ceil(totalUsers / limit),
+    role: req.session.role,
   });
 });
 
-// ----------------- LOGIN -----------------
+/* ---- LOGIN ---- */
 app.post("/api/auth/login", async (req, res) => {
-  const { email, password } = req.body;
-  const emailInput = email?.trim().toLowerCase();
-  const passwordInput = password?.trim();
-  const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
-  const adminPassword = process.env.ADMIN_PASSWORD?.trim();
+  const email = req.body.email?.trim().toLowerCase();
+  const password = req.body.password?.trim();
 
-  // ----- ADMIN LOGIN -----
-  if (emailInput === adminEmail && passwordInput === adminPassword) {
+  /* ADMIN LOGIN */
+  if (
+    email === process.env.ADMIN_EMAIL?.toLowerCase() &&
+    password === process.env.ADMIN_PASSWORD
+  ) {
     req.session.isAuth = true;
     req.session.role = "admin";
-    return res.status(200).json({ success: true, role: "admin" });
+    return res.status(200).json({ role: "admin" });
   }
 
-  // ----- NORMAL USER LOGIN (OTP) -----
-  try {
-    const user = await User.findOne({ email: emailInput });
-    if (!user) return res.status(404).send("Email not registered");
+  /* USER LOGIN */
+  const user = await User.findOne({ email });
+  if (!user) return res.status(404).send("Email not found");
 
-    const isMatch = await bcrypt.compare(passwordInput, user.password);
-    if (!isMatch) return res.status(401).send("Incorrect password");
+  const isMatch = await bcrypt.compare(password, user.password);
+  if (!isMatch) return res.status(401).send("Wrong password");
 
-    const otp = generateOTP();
-    req.session.loginOTP = otp;
-    req.session.otpExpiry = Date.now() + 5 * 60 * 1000;
-    req.session.tempUser = user.email;
-    req.session.role = user.role;
-    req.session.isAuth = false;
+  const otp = generateOTP();
+  req.session.loginOTP = otp;
+  req.session.otpExpiry = Date.now() + 5 * 60 * 1000;
+  req.session.tempUser = user.email;
+  req.session.role = user.role;
+  req.session.isAuth = false;
 
-    await sendMail({ email: user.email, name: user.name, otp });
-    return res.status(200).send("OTP sent to registered email");
-  } catch (err) {
-    console.error(err);
-    return res.status(500).send("Server error");
-  }
+  await sendMail({ email: user.email, name: user.name, otp });
+
+  res.send("OTP sent");
 });
 
-// ----------------- VERIFY OTP -----------------
+/* ---- VERIFY OTP ---- */
 app.post("/api/auth/verify-otp", (req, res) => {
   const { otp } = req.body;
 
-  if (!req.session.loginOTP || !req.session.otpExpiry)
-    return res.status(400).send("OTP not generated");
-
-  if (Date.now() > req.session.otpExpiry) {
-    req.session.loginOTP = null;
-    req.session.otpExpiry = null;
-    req.session.tempUser = null;
+  if (!req.session.loginOTP) return res.status(400).send("OTP missing");
+  if (Date.now() > req.session.otpExpiry)
     return res.status(401).send("OTP expired");
-  }
 
   if (Number(otp) !== req.session.loginOTP)
     return res.status(401).send("Invalid OTP");
@@ -244,11 +184,25 @@ app.post("/api/auth/verify-otp", (req, res) => {
   req.session.loginOTP = null;
   req.session.otpExpiry = null;
 
-  return res.status(200).send("Login successful");
+  res.send("Login success");
 });
 
-// ----------------- ROOT -----------------
-app.get("/", (req, res) => res.status(200).send("Server running successfully"));
+/* ---- LOGOUT ---- */
+app.get("/api/logout", (req, res) => {
+  req.session.destroy(() => {
+    res.clearCookie("connect.sid", {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+    });
+    res.send("Logged out");
+  });
+});
 
-// ----------------- START SERVER -----------------
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+/* ---- HEALTH CHECK ---- */
+app.get("/", (_, res) => res.send("Backend running 🚀"));
+
+/* ===================== START ===================== */
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
