@@ -21,7 +21,6 @@ mongoose
   .connect(MONGO_URL, { tls: true })
   .then(() => {
     console.log("✅ MongoDB Connected");
-    // create default admin if not exists
     createDefaultAdmin();
   })
   .catch((err) => console.error("❌ Mongo Error:", err));
@@ -52,16 +51,26 @@ app.use(
   })
 );
 
-// ----------------- CORS -----------------
+// ----------------- CORS (Production-Ready) -----------------
 const allowedOrigins = [
-  "http://localhost:5173", // local dev frontend
-  process.env.FRONTEND_URL, // production frontend
+  "http://localhost:5173",               // dev
+  "https://dhanushapp.netlify.app",      // production frontend
 ].filter(Boolean);
 
 app.use(
   cors({
-    origin: allowedOrigins,
+    origin: function (origin, callback) {
+      // allow requests with no origin (like Postman)
+      if (!origin) return callback(null, true);
+      if (!allowedOrigins.includes(origin)) {
+        const msg = `CORS policy does not allow access from ${origin}`;
+        return callback(new Error(msg), false);
+      }
+      return callback(null, true);
+    },
     credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
@@ -179,23 +188,19 @@ app.get("/api/logout", (req, res) => {
 // ----------------- LOGIN -----------------
 app.post("/api/auth/login", async (req, res) => {
   const { email, password } = req.body;
-
   const emailInput = email?.trim().toLowerCase();
   const passwordInput = password?.trim();
-
   const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
   const adminPassword = process.env.ADMIN_PASSWORD?.trim();
 
-  // ---------- ADMIN LOGIN ----------
+  // ----- ADMIN LOGIN -----
   if (emailInput === adminEmail && passwordInput === adminPassword) {
     req.session.isAuth = true;
     req.session.role = "admin";
-
-    console.log("Admin logged in");
     return res.status(200).json({ success: true, role: "admin" });
   }
 
-  // ---------- NORMAL USER LOGIN (OTP) ----------
+  // ----- NORMAL USER LOGIN (OTP) -----
   try {
     const user = await User.findOne({ email: emailInput });
     if (!user) return res.status(404).send("Email not registered");
@@ -211,7 +216,6 @@ app.post("/api/auth/login", async (req, res) => {
     req.session.isAuth = false;
 
     await sendMail({ email: user.email, name: user.name, otp });
-
     return res.status(200).send("OTP sent to registered email");
   } catch (err) {
     console.error(err);
