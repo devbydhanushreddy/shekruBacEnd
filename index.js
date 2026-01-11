@@ -19,8 +19,8 @@ const PORT = process.env.PORT || 8000;
 const MONGO_URL = process.env.MONGO_URL;
 const SALT = Number(process.env.SALT || 10);
 
-if (!MONGO_URL) {
-  console.error("❌ MONGO_URL missing");
+if (!MONGO_URL || !process.env.SESSION_SECRET) {
+  console.error("❌ MONGO_URL or SESSION_SECRET missing");
   process.exit(1);
 }
 
@@ -42,11 +42,9 @@ const store = new MongoDBStore({
   collection: "sessions",
 });
 
-store.on("error", (err) => {
-  console.error("❌ Session store error:", err);
-});
+store.on("error", (err) => console.error("❌ Session store error:", err));
 
-/* ===================== CORS (NODE 22 SAFE) ===================== */
+/* ===================== CORS ===================== */
 const allowedOrigins = [
   "http://localhost:5173",
   "https://dhanushapp.netlify.app",
@@ -60,18 +58,17 @@ app.use(
       return callback(new Error("CORS blocked"));
     },
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
 
-/* ❌ DO NOT USE app.options("*") — crashes Node 22 */
 /* ===================== BODY PARSERS ===================== */
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 /* ===================== SESSION ===================== */
-app.set("trust proxy", 1); // REQUIRED for Render
+app.set("trust proxy", 1); // Render HTTPS support
 
 app.use(
   session({
@@ -82,9 +79,9 @@ app.use(
     store,
     cookie: {
       httpOnly: true,
-      secure: true, // Render uses HTTPS
-      sameSite: "none", // Netlify cross-site cookie
-      maxAge: 1000 * 60 * 60,
+      secure: true, // HTTPS only
+      sameSite: "none", // Netlify frontend
+      maxAge: 1000 * 60 * 60, // 1 hour
     },
   })
 );
@@ -112,14 +109,42 @@ app.post("/add/user", isAuth, isAdmin, async (req, res) => {
       return res.status(409).send("User exists");
 
     const hash = await bcrypt.hash(password, SALT);
-    await User.create({
-      name,
-      email,
-      password: hash,
-      role: role || "user",
-    });
+    await User.create({ name, email, password: hash, role: role || "user" });
 
-    res.status(201).send("User added");
+    res.status(201).send("User added successfully");
+  } catch (err) {
+    res.status(500).send(err.message);
+  }
+});
+
+/* ---- EDIT USER ---- */
+app.put("/api/user/:id", isAuth, isAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, email, password, role } = req.body;
+
+    const user = await User.findById(id);
+    if (!user) return res.status(404).send("User not found");
+
+    if (name) user.name = name;
+    if (email) user.email = email;
+    if (role) user.role = role;
+    if (password) user.password = await bcrypt.hash(password, SALT);
+
+    await user.save();
+    res.status(200).send("User updated successfully");
+  } catch (err) {
+    res.status(500).send(err.message);
+  }
+});
+
+/* ---- DELETE USER ---- */
+app.delete("/api/user/:id", isAuth, isAdmin, async (req, res) => {
+  try {
+    const user = await User.findByIdAndDelete(req.params.id);
+    if (!user) return res.status(404).send("User not found");
+
+    res.status(200).send("User deleted successfully");
   } catch (err) {
     res.status(500).send(err.message);
   }
@@ -160,7 +185,7 @@ app.post("/api/auth/login", async (req, res) => {
     return res.json({ role: "admin" });
   }
 
-  // USER LOGIN
+  // USER LOGIN (OTP)
   const user = await User.findOne({ email });
   if (!user) return res.status(404).send("Email not found");
 
@@ -174,7 +199,6 @@ app.post("/api/auth/login", async (req, res) => {
   req.session.isAuth = false;
 
   await sendMail({ email: user.email, name: user.name, otp });
-
   res.send("OTP sent");
 });
 
@@ -185,7 +209,6 @@ app.post("/api/auth/verify-otp", (req, res) => {
   if (!req.session.loginOTP) return res.status(400).send("OTP missing");
   if (Date.now() > req.session.otpExpiry)
     return res.status(401).send("OTP expired");
-
   if (Number(otp) !== req.session.loginOTP)
     return res.status(401).send("Invalid OTP");
 
@@ -208,10 +231,8 @@ app.get("/api/logout", (req, res) => {
   });
 });
 
-/* ---- HEALTH ---- */
+/* ---- HEALTH CHECK ---- */
 app.get("/", (_, res) => res.send("Backend running 🚀"));
 
 /* ===================== START ===================== */
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
