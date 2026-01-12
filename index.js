@@ -184,8 +184,7 @@ app.post("/api/auth/login", async (req, res) => {
   ) {
     req.session.isAuth = true;
     req.session.role = "admin";
-    // return res.json({ role: "admin" });
-    return res.render("/dashboard");
+    return res.status(205).send("success");
   }
 
   // USER LOGIN (OTP)
