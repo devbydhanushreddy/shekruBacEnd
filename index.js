@@ -47,7 +47,7 @@ store.on("error", (err) => console.error("❌ Session store error:", err));
 /* ===================== CORS ===================== */
 const allowedOrigins = [
   "http://localhost:5173",
-  "https://dhanushprod.netlify.app/",
+  "https://dhanushprod.netlify.app",
 ];
 
 app.use(
