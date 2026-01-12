@@ -70,6 +70,8 @@ app.use(express.urlencoded({ extended: true }));
 /* ===================== SESSION ===================== */
 app.set("trust proxy", 1); // Render HTTPS support
 
+const isProd = process.env.NODE_ENV === "production";
+
 app.use(
   session({
     name: "connect.sid",
@@ -79,9 +81,9 @@ app.use(
     store,
     cookie: {
       httpOnly: true,
-      secure: true, // HTTPS only
-      sameSite: "none", // Netlify frontend
-      maxAge: 1000 * 60 * 60, // 1 hour
+      secure: isProd, // true only in production
+      sameSite: isProd ? "none" : "lax", // none in prod, lax in dev
+      maxAge: 1000 * 60 * 60,
     },
   })
 );
@@ -182,7 +184,8 @@ app.post("/api/auth/login", async (req, res) => {
   ) {
     req.session.isAuth = true;
     req.session.role = "admin";
-    return res.json({ role: "admin" });
+    // return res.json({ role: "admin" });
+    return res.render("/dashboard");
   }
 
   // USER LOGIN (OTP)
@@ -198,8 +201,15 @@ app.post("/api/auth/login", async (req, res) => {
   req.session.role = user.role;
   req.session.isAuth = false;
 
-  await sendMail({ email: user.email, name: user.name, otp });
-  res.send("OTP sent");
+  try {
+    await sendMail({ email: user.email, name: user.name, otp });
+    res.send("OTP sent");
+  } catch (error) {
+    console.log("mail send error");
+    console.log(error);
+
+    return res.send(error);
+  }
 });
 
 /* ---- VERIFY OTP ---- */
